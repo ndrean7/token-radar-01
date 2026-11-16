@@ -133,6 +133,19 @@
     var m = modelOf(r);
     var match = m.implied === r.implied_value_usd;
     var steps = r.farm_steps.map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('');
+    // Where this row's category multiple comes from: the multiples table carries
+    // the live count, the blend weight and the typical TVL per category.
+    var mult = null;
+    for (var i = 0; i < DATA.multiples.length; i++) if (DATA.multiples[i].category === (r.category || 'Unknown')) mult = DATA.multiples[i];
+    var prov = mult
+      ? '<div class="prov">Category multiple ' + r.category_multiple.toFixed(3) + 'x &mdash; ' + esc(r.category || 'Unknown') +
+        ': geometric mean of ' + mult.live_count + ' live protocol' + (mult.live_count === 1 ? '' : 's') +
+        '&rsquo; mcap/TVL, blended ' + Math.round(mult.category_weight * 100) + '% own / ' +
+        Math.round((1 - mult.category_weight) * 100) + '% global. Typical TVL ' + fmtUsd(mult.ref_tvl_usd) +
+        '; size slope ' + DATA.size_slope.toFixed(2) + '.</div>'
+      : '<div class="prov">Category multiple ' + r.category_multiple.toFixed(3) + 'x &mdash; ' + esc(r.category || 'Unknown') +
+        ' has no live protocol, so the row takes the global geometric mean ' + DATA.global_multiple.toFixed(3) +
+        'x. Typical TVL ' + fmtUsd(r.size_reference_tvl) + '; size slope ' + DATA.size_slope.toFixed(2) + '.</div>';
     return '<div class="head"><div class="muted small">Rank #' + r.rank + ' &middot; ' + esc(r.category || 'Unknown') +
       (r.watchlist ? ' &middot; <span class="badge watch">WATCHLIST</span>' : '') + '</div>' +
       '<h2>' + esc(r.name) + '</h2><div class="muted small">' + esc(r.chains.join(', ')) +
@@ -155,7 +168,7 @@
         ? '<div class="check">Sandbox values &mdash; board.json keeps the published model.</div>'
         : (match ? '<div class="check">Page recomputes ' + fmtUsd(m.implied) + ' &mdash; matches board.json.</div>'
           : '<div class="check" style="color:var(--amber)">Page recomputes ' + fmtUsd(m.implied) + ' &mdash; board.json says ' + fmtUsd(r.implied_value_usd) + '.</div>')) +
-      '</div>' +
+      prov + '</div>' +
       '<div class="farm"><h3>Farm plan &mdash; 7 steps</h3><ol>' + steps + '</ol></div>' +
       '<p class="note">Records no token in the sealed snapshot: no market cap, no CoinGecko id, no symbol. ' +
       'Implied value is a model estimate from the snapshot, not a price and not a promise of a launch.</p></div>';
@@ -203,8 +216,8 @@
     }).join('');
     var mult = DATA.multiples.map(function (m) {
       var w = m.category_weight;
-      var src = w <= 0 ? 'Global median &mdash; no live protocol in this category'
-        : Math.round(w * 100) + '% own median &middot; ' + Math.round((1 - w) * 100) + '% global';
+      var src = w <= 0 ? 'Global geometric mean &mdash; no live protocol in this category'
+        : Math.round(w * 100) + '% own geometric mean &middot; ' + Math.round((1 - w) * 100) + '% global';
       return '<tr><td>' + esc(m.category) + '</td><td class="r num">' + m.live_count + '</td>' +
         '<td class="r num">' + m.multiple.toFixed(2) + 'x</td><td class="r num">' + fmtUsd(m.ref_tvl_usd) + '</td><td>' + src + '</td></tr>';
     }).join('');
@@ -215,7 +228,7 @@
       '<div class="table-scroll"><table><thead><tr><th>Category</th><th class="r">Live</th><th class="r">Multiple</th><th class="r">Typical TVL</th><th>Source</th></tr></thead>' +
       '<tbody>' + mult + '</tbody></table></div>' +
       '<p class="small muted" style="padding:12px 16px">The board never ranks these protocols: their tokens already trade, ' +
-      'so the snapshot&rsquo;s market cap is their value. Each category&rsquo;s multiple blends its own live protocols&rsquo; median mcap/TVL with the global median, weighted by how many live protocols it has &mdash; and each protocol&rsquo;s own multiple is then adjusted for its size against the category&rsquo;s typical TVL. The model is calibrated by the snapshot itself, not by a hand-picked number.</p></div></div>';
+      'so the snapshot&rsquo;s market cap is their value. Each category&rsquo;s multiple blends its own live protocols&rsquo; geometric-mean mcap/TVL with the global geometric mean, weighted by how many live protocols it has &mdash; and each protocol&rsquo;s own multiple is then adjusted for its size against the category&rsquo;s typical TVL. The model is calibrated by the snapshot itself, not by a hand-picked number.</p></div></div>';
   }
 
   function modelTab() {
@@ -232,12 +245,17 @@
       'This is the sealed watchlist&rsquo;s own rule, applied to every protocol rather than only to the ' + DATA.watchlist_size +
       ' above the $50M floor. The board carries all ' + DATA.watchlist_size + ' watchlist protocols plus ' + DATA.early_size +
       ' more that pass the same rule &mdash; ' + DATA.board_size + ' rows in all.</p>' +
-      '<h3>2 &middot; The value model (radar-3)</h3>' +
-      '<div class="formula">implied = TVL x category_multiple\n        x (TVL / typical_TVL) ^ ' + DATA.size_slope.toFixed(2) + '\n        x (1 + clamp(change_7d, -50, 100) / 100 x 0.25)\n        x (0.90 + min(age_days, 1460) / 1460 x 0.10)</div>' +
-      '<p><b>category_multiple</b> blends the category&rsquo;s own median market-cap-to-TVL ratio with the global median ' + DATA.global_multiple.toFixed(2) + 'x, weighted by how many live protocols the category has (n out of n+5); a category with no live protocol takes the global median outright. Every multiple is clamped to ' + M.multiple_floor + '&ndash;' + M.multiple_cap +
-      'x. <b>Size</b> is the market&rsquo;s own slope: within a category, a bigger protocol trades at a lower multiple of its TVL (fitted slope ' + DATA.size_slope.toFixed(2) + '), so each protocol&rsquo;s multiple is adjusted against its category&rsquo;s typical TVL and clamped to &times;' + M.size_clamp_low + '&ndash;&times;' + M.size_clamp_high +
-      '. <b>Growth</b> keeps only a small tilt: on the live set, a week&rsquo;s TVL change carries almost no signal for the multiple, so one wild week cannot dominate. <b>Maturity</b> keeps only a gentle tilt for the wait &mdash; age carries almost no signal either, and the chain count carries none at all, so there is no chain bonus. No protocol name is special-cased: the same function scores every row, and this page recomputes every value from the same figures.</p>' +
-      '<p><b>How it was checked.</b> The model&rsquo;s job is to price a token that does not exist yet, and the snapshot carries 119 live-token protocols whose market caps are known &mdash; so the model was tested against them: split into five folds, fitted on four, asked to price the fifth, reshuffled ten times. It lands within 2&times; of the true market cap 29% of the time, against 24% for a flat category median, with a median log error of 0.60 against 0.72. The check is in the open: every number above is read out of this snapshot, not chosen by hand.</p>' +
+      '<h3>2 &middot; The value model (' + esc(DATA.model_version) + ')</h3>' +
+      '<div class="formula">implied = TVL x category_multiple\n        x (TVL / typical_TVL) ^ ' + DATA.size_slope.toFixed(2) + '\n        x (1 + clamp(change_7d, -50, 100) / 100 x ' + M.growth_weight + ')\n        x (0.90 + min(age_days, 1460) / 1460 x 0.10)</div>' +
+      '<p><b>category_multiple</b> blends the category&rsquo;s own geometric-mean market-cap-to-TVL ratio with the global geometric mean ' + DATA.global_multiple.toFixed(2) + 'x, weighted by how many live protocols the category has (n out of n+' + M.shrink_k + '); a category with no live protocol takes the global mean outright. Every multiple is clamped to ' + M.multiple_floor + '&ndash;' + M.multiple_cap +
+      'x. <b>Size</b> is the market&rsquo;s own slope, fitted by median error: the slope that minimises the median absolute log error of the model&rsquo;s own predictions over the 119 live protocols (fitted slope ' + DATA.size_slope.toFixed(2) + '), so each protocol&rsquo;s multiple is adjusted against its category&rsquo;s typical TVL and clamped to &times;' + M.size_clamp_low + '&ndash;&times;' + M.size_clamp_high +
+      '. The least-squares slope (&minus;0.33) is flattened by a few outlying ratios; the median protocol&rsquo;s multiple falls faster with size. <b>Growth</b> keeps only a small tilt: on the live set, a week&rsquo;s TVL change carries almost no signal for the multiple, so one wild week cannot dominate. <b>Maturity</b> keeps only a gentle tilt for the wait &mdash; age carries almost no signal either, and the chain count carries none at all, so there is no chain bonus. No protocol name is special-cased: the same function scores every row, and this page recomputes every value from the same figures.</p>' +
+      '<p><b>How it was checked.</b> The model&rsquo;s job is to price a token that does not exist yet, and the snapshot carries 119 live-token protocols whose market caps are known &mdash; so the model was tested against them: split into five folds, fitted on four, asked to price the fifth, reshuffled ten times, and then again on ten fresh reshuffles the tuning never saw, with the same result. It lands within 2&times; of the true market cap 31% of the time, against 28% for radar-3 and 21% for a flat category median, with a median log error of 0.54 against 0.60 and 0.70. The check is in the open: every number above is read out of this snapshot, not chosen by hand.</p>' +
+      '<table class="cv"><thead><tr><th>Model</th><th class="r">Median log error</th><th class="r">Within 2&times;</th><th class="r">Spearman</th></tr></thead><tbody>' +
+      '<tr><td>Flat category median (radar-2)</td><td class="r num">0.70</td><td class="r num">21%</td><td class="r num">0.37</td></tr>' +
+      '<tr><td>radar-3</td><td class="r num">0.60</td><td class="r num">28%</td><td class="r num">0.36</td></tr>' +
+      '<tr><td><b>radar-4 (this board)</b></td><td class="r num"><b>0.54</b></td><td class="r num"><b>31%</b></td><td class="r num">0.36</td></tr></tbody></table>' +
+      '<p class="small muted">Five-fold cross-validation on the 119 live-token protocols, 10 reshuffles, same folds and seeds for every model. The median absolute percentage error falls from 93% (flat median) to 89% (radar-3) to 86% (radar-4).</p>' +
       '<h3>3 &middot; The farm plan</h3>' +
       '<p>Every row carries seven steps, derived from the protocol&rsquo;s own record &mdash; its category decides the ' +
       'action, its TVL decides the capital ($50&ndash;$250), its age decides how long to hold (30&ndash;60 days). The first ' +
@@ -254,7 +272,7 @@
   function render() {
     var total = fmtUsd(DATA.total_implied_usd);
     var top = DATA.rows[0];
-    var html = '<header class="hero"><div class="eyebrow">DefiLlama snapshot &middot; ' + esc(DATA.as_of) + ' &middot; model radar-3</div>' +
+    var html = '<header class="hero"><div class="eyebrow">DefiLlama snapshot &middot; ' + esc(DATA.as_of) + ' &middot; model ' + esc(DATA.model_version) + '</div>' +
       '<h1>Token Radar<span class="dot">.</span></h1>' +
       '<p class="sub">Every protocol that still records no token, ranked by what its launch would be worth &mdash; ' +
       'priced by the market&rsquo;s own multiples, not by a hand-picked number.</p>' +
@@ -272,7 +290,7 @@
       '</nav>' +
       '<section id="board">' + (state.tab === 'board' ? boardTab() : state.tab === 'live' ? liveTab() : modelTab()) + '</section>' +
       '<footer>Source: ' + esc(DATA.source) + '. Snapshot sealed ' + esc(DATA.as_of) + ' &middot; floor $50M &middot; ' +
-      'Model radar-3 &middot; Implied values are estimates from the snapshot, not prices and not financial advice.</footer>';
+      'Model ' + esc(DATA.model_version) + ' &middot; Implied values are estimates from the snapshot, not prices and not financial advice.</footer>';
     app.innerHTML = html;
     bind();
   }

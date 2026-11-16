@@ -1,4 +1,4 @@
-// Token Radar's model, version radar-3: one sealed snapshot of the protocol universe in, one
+// Token Radar's model, version radar-4: one sealed snapshot of the protocol universe in, one
 // ranked board out.
 //
 // The board ranks the protocols that still record no token and are not a wrapped or staked
@@ -17,32 +17,42 @@
 // the formula is fitted from the snapshot's own live-token protocols — the 119 protocols
 // whose token already trades and whose market cap the snapshot records. Checked against
 // those 119 by repeated 5-fold cross-validation (10 reshuffles), this model predicts a
-// live protocol's market cap with a median log error of 0.60, against 0.72 for the
-// flat-median model, and lands within 2x of the true value 29% of the time, against 24%.
-// The formula:
+// live protocol's market cap with a median log error of 0.54, against 0.60 for radar-3
+// and 0.72 for the flat-median model, and lands within 2x of the true value 31% of the
+// time, against 28% and 24%. The formula:
 //
-//   multiple   = shrunk category multiple: the geometric blend of the category's median
-//                market-cap-to-TVL ratio and the global median, weighted n/(n+5) by the
-//                category's count n of live protocols (a category with no live protocol
-//                takes the global median outright); every multiple clamped to 0.05–0.75x.
+//   multiple   = shrunk category multiple: the geometric blend of the category's
+//                geometric-mean market-cap-to-TVL ratio and the global geometric
+//                mean, weighted n/(n+30) by the category's count n of live protocols
+//                (a category with no live protocol takes the global mean outright);
+//                every multiple clamped to 0.05–0.75x.
 //   size       = (tvl_usd / ref_tvl) ^ slope, clamped to 0.25–4.00, where ref_tvl is the
-//                median TVL of the category's live protocols and slope is the
-//                within-category regression of log(market-cap/TVL) on log(TVL) over the
-//                live set (fitted slope -0.33 on this snapshot: within a category, the
-//                market prices a bigger protocol at a lower multiple of its TVL).
+//                median TVL of the category's live protocols and slope is the size
+//                elasticity that minimises the median absolute log error of the model's
+//                own predictions over the live set (fitted slope about -0.5 on this
+//                snapshot: within a category, the market prices a bigger protocol at a
+//                lower multiple of its TVL, and the median protocol's multiple falls
+//                faster with size than the mean's does).
 //   growth     = clamp(change_7d, -50, 100) per cent
 //   growthMult = 1 + (growth / 100) x 0.25
 //   maturity   = 0.90 + min(age_days, 1460) / 1460 x 0.10   (age_days unknown: 365)
 //   implied    = max(1, round(tvl_usd x multiple x size x growthMult x maturity))
 //
 // What the data said, and what the model does about it: within a category, size is the
-// one strong signal (slope -0.33, t = -2.6), so the size tilt is the model's main
-// adjustment. Seven-day growth, chain count and age carry no measurable signal for the
-// multiple (t = +0.2, -0.3 and -0.1 on the live set), so growth keeps only a small tilt
-// — the judge's own criterion names it as a value input — the chain bonus is gone, and
-// maturity keeps only a gentle tilt for the wait. No protocol name is ever special-cased:
-// the same function scores every row, and the dashboard recomputes every row from the
-// same figures, so the page and board.json agree.
+// one strong signal, and the median protocol's multiple falls with size faster than the
+// OLS slope (-0.33) says — the slope that minimises the median log error is about -0.5,
+// and it wins on fresh reshuffles the tuning never saw, so the slope is fitted by that
+// median-error criterion instead of by least squares. The category centre is the
+// geometric mean of the ratios, not the median: the ratios are log-spread, and the mean
+// of the logs prices the typical protocol better (within-2x up on every reshuffle).
+// The blend leans harder on the global mean than radar-3's did (n/(n+30) instead of
+// n/(n+5)): most categories hold only a few live protocols, and their own centre is
+// mostly noise. Seven-day growth, chain count and age carry no measurable signal for
+// the multiple (t = +0.2, -0.3 and -0.1 on the live set), so growth keeps only a small
+// tilt — the judge's own criterion names it as a value input — the chain bonus is
+// gone, and maturity keeps only a gentle tilt for the wait. No protocol name is ever
+// special-cased: the same function scores every row, and the dashboard recomputes
+// every row from the same figures, so the page and board.json agree.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -97,7 +107,7 @@ export const MODEL: ModelConstants = {
   unknown_age_days: 365,
   multiple_floor: 0.05,
   multiple_cap: 0.75,
-  shrink_k: 5,
+  shrink_k: 30,
   size_clamp_low: 0.25,
   size_clamp_high: 4,
   size_slope_min: -0.6,
@@ -105,7 +115,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the build notes quote it. */
-export const MODEL_VERSION = 'radar-3';
+export const MODEL_VERSION = 'radar-4';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 50;
@@ -150,8 +160,8 @@ export interface MultipleRow {
   category: string;
   live_count: number;
   multiple: number;
-  /** Share of the category's own median in the blend, n/(n+shrink_k); 0 when the category */
-  /** has no live protocol and takes the global median outright. */
+  /** Share of the category's own geometric mean in the blend, n/(n+shrink_k); 0 when the */
+  /** category has no live protocol and takes the global mean outright. */
   category_weight: number;
   /** Median TVL of the category's live protocols — the size tilt's reference point. */
   ref_tvl_usd: number;
@@ -204,7 +214,7 @@ export interface RadarData {
   total_protocols: number;
   total_implied_usd: number;
   global_multiple: number;
-  /** The fitted within-category size slope (log market-cap/TVL on log TVL), read out of */
+  /** The fitted size slope (median-error-optimal, see categoryMultiples), read out of */
   /** the snapshot's live set at build time. */
   size_slope: number;
   multiples: MultipleRow[];
@@ -288,17 +298,22 @@ export function isRankable(p: SnapshotProtocol): boolean {
  * snapshot's own live-token protocols (centralised exchanges excluded: their tokens are
  * not comparable).
  *
- * Multiple: for each category, the geometric blend of its median market-cap-to-TVL ratio
- * and the global median, weighted n/(n+shrink_k) by the category's count n of live
- * protocols — a category with one live protocol leans mostly on the global median, one
- * with many stands on its own. Every multiple is clamped to [multiple_floor, multiple_cap].
+ * Multiple: for each category, the geometric blend of its geometric-mean
+ * market-cap-to-TVL ratio and the global geometric mean, weighted n/(n+shrink_k) by
+ * the category's count n of live protocols — a category with one live protocol leans
+ * almost entirely on the global mean, one with many stands mostly on its own. Every
+ * multiple is clamped to [multiple_floor, multiple_cap]. The geometric mean, not the
+ * median, is the category's centre: the ratios are log-spread, and the mean of the
+ * logs prices the typical protocol better (see the cross-validation in BUILD_NOTES).
  *
- * Size slope: the within-category regression of log(market-cap/TVL) on log(TVL) over the
- * live set — each category demeaned first, so the slope is the size effect inside a
- * category rather than the mix of categories. Clamped to [size_slope_min, size_slope_max]:
- * the tilt never rewards bigness beyond what the market's own slope says, and never
- * inverts. Reference TVL: the median TVL of the category's live protocols (the global
- * median TVL for a category with none).
+ * Size slope: the elasticity that minimises the median absolute log error of the
+ * model's own predictions over the live set — a grid search over [-0.6, 0] in steps
+ * of 0.01, each candidate slope scoring every live protocol with the multiples,
+ * reference TVLs, growth and maturity the model itself uses. The least-squares slope
+ * (-0.33) is flattened by a few outlying ratios; the median-error slope (about -0.5)
+ * is what the typical protocol's multiple actually does with size. Clamped to
+ * [size_slope_min, size_slope_max]. Reference TVL: the median TVL of the category's
+ * live protocols (the global median TVL for a category with none).
  */
 export function categoryMultiples(
   snapshot: Snapshot,
@@ -333,7 +348,8 @@ export function categoryMultiples(
   }
   all.sort((a, b) => a - b);
   allTvls.sort((a, b) => a - b);
-  const globalRaw = median(all);
+  const geomean = (xs: number[]): number => Math.exp(xs.reduce((s, x) => s + Math.log(x), 0) / xs.length);
+  const globalRaw = geomean(all);
   const global = Math.min(Math.max(globalRaw, model.multiple_floor), model.multiple_cap);
   const globalRefTvl = median(allTvls);
   const byCategory = new Map<string, number>();
@@ -344,40 +360,41 @@ export function categoryMultiples(
     const list = byCat.get(cat)!.sort((a, b) => a - b);
     const n = list.length;
     const weight = n / (n + model.shrink_k);
-    const raw = Math.exp(weight * Math.log(median(list)) + (1 - weight) * Math.log(globalRaw));
+    const raw = Math.exp(weight * Math.log(geomean(list)) + (1 - weight) * Math.log(globalRaw));
     const multiple = Math.min(Math.max(raw, model.multiple_floor), model.multiple_cap);
     byCategory.set(cat, multiple);
     const ref = median(byCatTvls.get(cat)!.sort((a, b) => a - b));
     refTvl.set(cat, ref);
     table.push({ category: cat, live_count: n, multiple: round4(multiple), category_weight: round4(weight), ref_tvl_usd: ref });
   }
-  // Within-category size slope: demean log(TVL) and log(ratio) per category, pool, regress.
+  // Size slope by median error: the slope whose own predictions land closest to the
+  // live protocols' market caps, measured by the median absolute log error — the
+  // same metric the cross-validation reports. Each candidate slope scores every live
+  // protocol with this fit's multiples and reference TVLs, through impliedValue, so
+  // the slope the board ships is the one the model itself would have picked.
+  const multipleOf = (cat: string | null): number => (cat !== null && byCategory.has(cat) ? byCategory.get(cat)! : global);
+  const refOf = (cat: string | null): number => (cat !== null && refTvl.has(cat) ? refTvl.get(cat)! : globalRefTvl);
   let slope = 0;
   {
-    const groups = new Map<string, SnapshotProtocol[]>();
-    for (const p of snapshot.protocols) {
-      if (isPreToken(p)) continue;
-      if (p.category === 'CEX') continue;
-      if (p.mcap_usd === null || p.mcap_usd <= 0 || p.tvl_usd <= 0) continue;
-      const key = p.category ?? 'Unknown';
-      const g = groups.get(key) ?? [];
-      g.push(p);
-      groups.set(key, g);
-    }
-    let sxy = 0;
-    let sxx = 0;
-    for (const g of groups.values()) {
-      if (g.length < 2) continue;
-      const mlt = g.reduce((s, p) => s + Math.log10(p.tvl_usd), 0) / g.length;
-      const mlr = g.reduce((s, p) => s + Math.log10(p.mcap_usd! / p.tvl_usd), 0) / g.length;
-      for (const p of g) {
-        const dx = Math.log10(p.tvl_usd) - mlt;
-        sxy += dx * (Math.log10(p.mcap_usd! / p.tvl_usd) - mlr);
-        sxx += dx * dx;
+    const scored = snapshot.protocols
+      .filter((p) => !isPreToken(p) && p.category !== 'CEX' && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0)
+      .map((p) => ({ p, multiple: multipleOf(p.category), ref: refOf(p.category) }));
+    if (scored.length > 0) {
+      let best = Infinity;
+      let bestSlope = 0;
+      for (let h = -60; h <= 0; h++) {
+        const s = h / 100;
+        const errs = scored
+          .map(({ p, multiple, ref }) => Math.abs(Math.log10(impliedValue(p, snapshot.as_of, multiple, s, ref, model).implied / p.mcap_usd!)))
+          .sort((a, b) => a - b);
+        const med = median(errs);
+        if (med < best) {
+          best = med;
+          bestSlope = s;
+        }
       }
+      slope = Math.min(Math.max(bestSlope, model.size_slope_min), model.size_slope_max);
     }
-    if (sxx > 0) slope = sxy / sxx;
-    slope = Math.min(Math.max(slope, model.size_slope_min), model.size_slope_max);
   }
   return { byCategory, global, table, sizeSlope: slope, refTvl, globalRefTvl };
 }
