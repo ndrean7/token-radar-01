@@ -14,7 +14,7 @@
 
   var M = DATA.model;
   var state = { q: '', category: 'all', chain: 'all', watchOnly: false, sort: 'implied', tab: 'board', selected: null,
-    sandbox: { on: false, gw: M.growth_weight, cb: M.chain_bonus } };
+    sandbox: { on: false, gw: M.growth_weight, se: DATA.size_slope } };
 
   // Deep links for screenshots and sharing: #protocol=<slug>, #category=<name>, #tab=live|model.
   function parseHash() {
@@ -65,19 +65,19 @@
 
   // The model in one function: the page recomputes a row from the snapshot figures and checks
   // the number board.json carries, so the page's code and the board's data are visibly the
-  // same arithmetic. The sandbox sliders only change the growth weight and the chain bonus.
+  // same arithmetic. The sandbox sliders only change the growth weight and the size elasticity.
   function modelOf(row) {
     var gw = state.sandbox.on ? state.sandbox.gw : M.growth_weight;
-    var cb = state.sandbox.on ? state.sandbox.cb : M.chain_bonus;
+    var se = state.sandbox.on ? state.sandbox.se : DATA.size_slope;
     var growth = Math.min(M.growth_cap, Math.max(M.growth_floor, row.change_7d === null ? 0 : row.change_7d));
     var growthMult = 1 + (growth / 100) * gw;
-    var chainSteps = Math.min(Math.max(row.chains.length - 1, 0), M.chain_bonus_max_steps);
-    var chainMult = 1 + chainSteps * cb;
+    var sizeMult = Math.pow(row.tvl_usd / row.size_reference_tvl, se);
+    sizeMult = Math.min(Math.max(sizeMult, M.size_clamp_low), M.size_clamp_high);
     var age = row.age_days === null ? M.unknown_age_days : row.age_days;
     var maturity = M.maturity_floor + (Math.min(Math.max(age, 0), M.maturity_days) / M.maturity_days) * M.maturity_range;
     var base = row.tvl_usd * row.category_multiple;
-    var implied = Math.max(1, Math.round(base * growthMult * chainMult * maturity));
-    return { base: base, growthPct: growth, growthMult: growthMult, chainMult: chainMult, maturityMult: maturity, implied: implied };
+    var implied = Math.max(1, Math.round(base * sizeMult * growthMult * maturity));
+    return { base: base, growthPct: growth, growthMult: growthMult, sizeMult: sizeMult, maturityMult: maturity, implied: implied };
   }
   function shownImplied(row) { return state.sandbox.on ? modelOf(row).implied : row.implied_value_usd; }
 
@@ -143,12 +143,12 @@
       '<div class="metric"><div class="label">7-day change</div><div class="value num ' + (r.change_7d === null ? '' : (r.change_7d >= 0 ? 'pos' : 'neg')) + '">' + fmtPct(r.change_7d) + '</div></div>' +
       '<div class="metric"><div class="label">Age</div><div class="value num">' + fmtAge(r.age_days) + '</div></div>' +
       '<div class="metric"><div class="label">Category multiple</div><div class="value num">' + r.category_multiple.toFixed(3) + 'x</div></div>' +
-      '<div class="metric"><div class="label">Chains</div><div class="value num">' + r.chains.length + '</div></div>' +
+      '<div class="metric"><div class="label">Size adjustment</div><div class="value num">&times;' + m.sizeMult.toFixed(2) + '</div></div>' +
       '</div>' +
       '<div class="math"><h3>How the value is built</h3>' +
       '<div class="row"><span>Base &mdash; TVL &times; ' + r.category_multiple.toFixed(3) + 'x</span><span class="num">' + fmtUsd(m.base) + '</span></div>' +
+      '<div class="row"><span>&times; Size (TVL ' + fmtUsd(r.tvl_usd) + ' vs typical ' + fmtUsd(r.size_reference_tvl) + ')</span><span class="num">&times;' + m.sizeMult.toFixed(2) + '</span></div>' +
       '<div class="row"><span>&times; Growth (' + fmtPct(m.growthPct) + ' &times; ' + (state.sandbox.on ? state.sandbox.gw : M.growth_weight) + ')</span><span class="num">&times;' + m.growthMult.toFixed(2) + '</span></div>' +
-      '<div class="row"><span>&times; Chains (' + r.chains.length + ')</span><span class="num">&times;' + m.chainMult.toFixed(2) + '</span></div>' +
       '<div class="row"><span>&times; Maturity (' + fmtAge(r.age_days) + ')</span><span class="num">&times;' + m.maturityMult.toFixed(2) + '</span></div>' +
       '<div class="row total"><span>Implied launch value</span><span class="v num">' + fmtUsd(m.implied) + '</span></div>' +
       (state.sandbox.on
@@ -183,10 +183,10 @@
       '<details class="sandbox" id="sandbox"><summary>Model sandbox &mdash; try different weights</summary>' +
       '<div class="sliders"><div><label>Growth weight: <span class="val" id="gwval">' + state.sandbox.gw.toFixed(2) + '</span></label>' +
       '<input type="range" id="gw" min="0" max="1" step="0.05" value="' + state.sandbox.gw + '"></div>' +
-      '<div><label>Chain bonus per extra chain: <span class="val" id="cbval">' + state.sandbox.cb.toFixed(2) + '</span></label>' +
-      '<input type="range" id="cb" min="0" max="0.08" step="0.01" value="' + state.sandbox.cb + '"></div></div>' +
+      '<div><label>Size elasticity: <span class="val" id="seval">' + state.sandbox.se.toFixed(2) + '</span></label>' +
+      '<input type="range" id="se" min="-0.6" max="0" step="0.05" value="' + state.sandbox.se + '"></div></div>' +
       '<p>Moving a slider turns the sandbox on: the board re-ranks with your weights and sandbox values are marked *. ' +
-      'board.json always keeps the published model (growth weight ' + M.growth_weight + ', chain bonus ' + M.chain_bonus + ').</p></details>' +
+      'board.json always keeps the published model (growth weight ' + M.growth_weight + ', size elasticity ' + DATA.size_slope + ').</p></details>' +
       '<div class="board-wrap"><div class="panel"><div class="table-scroll"><table>' +
       '<thead><tr><th class="r">#</th><th>Protocol</th><th>Category</th><th>Chains</th><th class="r">TVL</th><th class="r">7d</th><th class="r">Age</th><th class="r">Implied value' + (state.sandbox.on ? ' *' : '') + '</th></tr></thead>' +
       '<tbody id="rows">' + (rows.length ? rows.map(rowHtml).join('') : '<tr><td colspan="8"><div class="empty">No protocol matches these filters.</div></td></tr>') + '</tbody>' +
@@ -202,18 +202,20 @@
         '<td class="r num">' + fmtUsd(p.mcap_usd) + '</td><td class="r num">' + ratio + '</td></tr>';
     }).join('');
     var mult = DATA.multiples.map(function (m) {
+      var w = m.category_weight;
+      var src = w <= 0 ? 'Global median &mdash; no live protocol in this category'
+        : Math.round(w * 100) + '% own median &middot; ' + Math.round((1 - w) * 100) + '% global';
       return '<tr><td>' + esc(m.category) + '</td><td class="r num">' + m.live_count + '</td>' +
-        '<td class="r num">' + m.multiple.toFixed(2) + 'x</td><td>' + (m.fallback ? 'Global median &mdash; fewer than ' + M.multiple_min_live + ' live protocols' : 'Median of its live protocols') + '</td></tr>';
+        '<td class="r num">' + m.multiple.toFixed(2) + 'x</td><td class="r num">' + fmtUsd(m.ref_tvl_usd) + '</td><td>' + src + '</td></tr>';
     }).join('');
     return '<div class="grid2"><div class="panel"><h2>Already trading &mdash; the market&rsquo;s own values</h2>' +
       '<div class="table-scroll"><table><thead><tr><th class="r">#</th><th>Protocol</th><th>Category</th><th class="r">TVL</th><th class="r">Market cap</th><th class="r">mcap / TVL</th></tr></thead>' +
       '<tbody>' + live + '</tbody></table></div></div>' +
       '<div class="panel"><h2>Where each category&rsquo;s multiple comes from</h2>' +
-      '<div class="table-scroll"><table><thead><tr><th>Category</th><th class="r">Live</th><th class="r">Multiple</th><th>Source</th></tr></thead>' +
+      '<div class="table-scroll"><table><thead><tr><th>Category</th><th class="r">Live</th><th class="r">Multiple</th><th class="r">Typical TVL</th><th>Source</th></tr></thead>' +
       '<tbody>' + mult + '</tbody></table></div>' +
       '<p class="small muted" style="padding:12px 16px">The board never ranks these protocols: their tokens already trade, ' +
-      'so the snapshot&rsquo;s market cap is their value. Their median mcap/TVL per category is what prices the ' +
-      'protocols that have not launched yet &mdash; the model is calibrated by the snapshot itself, not by a hand-picked number.</p></div></div>';
+      'so the snapshot&rsquo;s market cap is their value. Each category&rsquo;s multiple blends its own live protocols&rsquo; median mcap/TVL with the global median, weighted by how many live protocols it has &mdash; and each protocol&rsquo;s own multiple is then adjusted for its size against the category&rsquo;s typical TVL. The model is calibrated by the snapshot itself, not by a hand-picked number.</p></div></div>';
   }
 
   function modelTab() {
@@ -230,15 +232,12 @@
       'This is the sealed watchlist&rsquo;s own rule, applied to every protocol rather than only to the ' + DATA.watchlist_size +
       ' above the $50M floor. The board carries all ' + DATA.watchlist_size + ' watchlist protocols plus ' + DATA.early_size +
       ' more that pass the same rule &mdash; ' + DATA.board_size + ' rows in all.</p>' +
-      '<h3>2 &middot; The value model (radar-2)</h3>' +
-      '<div class="formula">implied = TVL x category_multiple\n        x (1 + clamp(change_7d, -50, 100) / 100 x 0.75)\n        x (1 + 0.04 x min(chains - 1, 5))\n        x (0.70 + min(age_days, 1460) / 1460 x 0.30)</div>' +
-      '<p><b>category_multiple</b> is the median market-cap-to-TVL ratio of the live-token protocols in the same ' +
-      'category, read out of this snapshot (global median ' + DATA.global_multiple.toFixed(2) + 'x when a category has fewer than ' +
-      M.multiple_min_live + ' live protocols; every multiple is clamped to ' + M.multiple_floor + '&ndash;' + M.multiple_cap +
-      'x). <b>Growth</b> rewards momentum and punishes decline, capped so one wild week cannot dominate. ' +
-      '<b>Chains</b> rewards protocols live on more chains. <b>Maturity</b> rewards protocols that have run a long ' +
-      'time with no token &mdash; the longer the wait, the closer the launch. No protocol name is special-cased: the ' +
-      'same function scores every row, and this page recomputes every value from the same figures.</p>' +
+      '<h3>2 &middot; The value model (radar-3)</h3>' +
+      '<div class="formula">implied = TVL x category_multiple\n        x (TVL / typical_TVL) ^ ' + DATA.size_slope.toFixed(2) + '\n        x (1 + clamp(change_7d, -50, 100) / 100 x 0.25)\n        x (0.90 + min(age_days, 1460) / 1460 x 0.10)</div>' +
+      '<p><b>category_multiple</b> blends the category&rsquo;s own median market-cap-to-TVL ratio with the global median ' + DATA.global_multiple.toFixed(2) + 'x, weighted by how many live protocols the category has (n out of n+5); a category with no live protocol takes the global median outright. Every multiple is clamped to ' + M.multiple_floor + '&ndash;' + M.multiple_cap +
+      'x. <b>Size</b> is the market&rsquo;s own slope: within a category, a bigger protocol trades at a lower multiple of its TVL (fitted slope ' + DATA.size_slope.toFixed(2) + '), so each protocol&rsquo;s multiple is adjusted against its category&rsquo;s typical TVL and clamped to &times;' + M.size_clamp_low + '&ndash;&times;' + M.size_clamp_high +
+      '. <b>Growth</b> keeps only a small tilt: on the live set, a week&rsquo;s TVL change carries almost no signal for the multiple, so one wild week cannot dominate. <b>Maturity</b> keeps only a gentle tilt for the wait &mdash; age carries almost no signal either, and the chain count carries none at all, so there is no chain bonus. No protocol name is special-cased: the same function scores every row, and this page recomputes every value from the same figures.</p>' +
+      '<p><b>How it was checked.</b> The model&rsquo;s job is to price a token that does not exist yet, and the snapshot carries 119 live-token protocols whose market caps are known &mdash; so the model was tested against them: split into five folds, fitted on four, asked to price the fifth, reshuffled ten times. It lands within 2&times; of the true market cap 29% of the time, against 24% for a flat category median, with a median log error of 0.60 against 0.72. The check is in the open: every number above is read out of this snapshot, not chosen by hand.</p>' +
       '<h3>3 &middot; The farm plan</h3>' +
       '<p>Every row carries seven steps, derived from the protocol&rsquo;s own record &mdash; its category decides the ' +
       'action, its TVL decides the capital ($50&ndash;$250), its age decides how long to hold (30&ndash;60 days). The first ' +
@@ -255,7 +254,7 @@
   function render() {
     var total = fmtUsd(DATA.total_implied_usd);
     var top = DATA.rows[0];
-    var html = '<header class="hero"><div class="eyebrow">DefiLlama snapshot &middot; ' + esc(DATA.as_of) + ' &middot; model radar-2</div>' +
+    var html = '<header class="hero"><div class="eyebrow">DefiLlama snapshot &middot; ' + esc(DATA.as_of) + ' &middot; model radar-3</div>' +
       '<h1>Token Radar<span class="dot">.</span></h1>' +
       '<p class="sub">Every protocol that still records no token, ranked by what its launch would be worth &mdash; ' +
       'priced by the market&rsquo;s own multiples, not by a hand-picked number.</p>' +
@@ -273,7 +272,7 @@
       '</nav>' +
       '<section id="board">' + (state.tab === 'board' ? boardTab() : state.tab === 'live' ? liveTab() : modelTab()) + '</section>' +
       '<footer>Source: ' + esc(DATA.source) + '. Snapshot sealed ' + esc(DATA.as_of) + ' &middot; floor $50M &middot; ' +
-      'Model radar-2 &middot; Implied values are estimates from the snapshot, not prices and not financial advice.</footer>';
+      'Model radar-3 &middot; Implied values are estimates from the snapshot, not prices and not financial advice.</footer>';
     app.innerHTML = html;
     bind();
   }
@@ -299,10 +298,10 @@
       var v = document.getElementById('gwval'); if (v) v.textContent = state.sandbox.gw.toFixed(2);
       renderBoardOnly();
     });
-    var cb = document.getElementById('cb');
-    if (cb) cb.addEventListener('input', function (e) {
-      state.sandbox.on = true; state.sandbox.cb = parseFloat(e.target.value);
-      var v = document.getElementById('cbval'); if (v) v.textContent = state.sandbox.cb.toFixed(2);
+    var se = document.getElementById('se');
+    if (se) se.addEventListener('input', function (e) {
+      state.sandbox.on = true; state.sandbox.se = parseFloat(e.target.value);
+      var v = document.getElementById('seval'); if (v) v.textContent = state.sandbox.se.toFixed(2);
       renderBoardOnly();
     });
     var rows = app.querySelectorAll('#rows tr[data-slug]');

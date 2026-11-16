@@ -12,23 +12,34 @@ Entry for make.fun's **"Build the best token launch radar"** (`token-radar-01`, 
 - `screenshots/` — the three screenshots
 - `dossier.json` — built with the kit's vendored `vendor/makefun-board.ts` (byte-for-byte copy from the kit)
 
-## The model (radar-2)
+## The model (radar-3)
 
 **Who counts as pre-token** — the sealed watchlist's own rule, applied to every protocol:
 
 - records no token: market cap, CoinGecko id and symbol are all null;
 - not a wrapped/staked product: category is not Bridge, Canonical Bridge, Cross Chain Bridge, Liquid Staking, Liquid Restaking, Restaked BTC or CEX; the name has no whole word `wrapped`/`staked`/`staking`, does not end in a version marker (`V2`, `v3`, `2.0`) and does not begin with a centralised-exchange brand.
 
-**Implied value** — from the snapshot's own figures only:
+**Implied value** — from the snapshot's own figures only, every number fitted from the snapshot's 119 live-token protocols:
 
 ```
 implied = TVL x category_multiple
-        x (1 + clamp(change_7d, -50, 100) / 100 x 0.75)
-        x (1 + 0.04 x min(chains - 1, 5))
-        x (0.70 + min(age_days, 1460) / 1460 x 0.30)
+        x (TVL / typical_TVL) ^ -0.33
+        x (1 + clamp(change_7d, -50, 100) / 100 x 0.25)
+        x (0.90 + min(age_days, 1460) / 1460 x 0.10)
 ```
 
-`category_multiple` is the median market-cap-to-TVL ratio of the live-token protocols in the same category, read out of the snapshot (global median 0.246x when a category has fewer than 3 live protocols; every multiple clamped to 0.05–0.75x). No protocol name is special-cased. The dashboard recomputes every row from the same figures and checks it against board.json — the detail view prints "Page recomputes $X — matches board.json."
+`category_multiple` is the geometric blend of the category's median market-cap-to-TVL ratio and the global median (0.246x), weighted n/(n+5) by the category's live count; `typical_TVL` is the median TVL of the category's live protocols; the size tilt is clamped to 0.25–4.00x and every multiple to 0.05–0.75x. No protocol name is special-cased. The dashboard recomputes every row from the same figures and checks it against board.json — the detail view prints "Page recomputes $X — matches board.json."
+
+**What the data said.** Measured on the 119 live protocols before changing anything: within a category, size is the one strong signal for the multiple (slope −0.33, t = −2.6); 7-day growth (t = +0.2), chain count (t = −0.3) and age (t = −0.1) carry none. So radar-3 keeps the size tilt, shrinks the growth weight from 0.75 to 0.25, drops the chain bonus, and flattens maturity from 0.70–1.00 to 0.90–1.00. Each change was kept only because it raised the measured score (see below); the chain bonus and the old maturity curve were dropped because they did not.
+
+**How it was checked.** The model's job is to price a token that does not exist yet, and the snapshot's live protocols are the only ground truth: 5-fold cross-validation, fit on four folds, predict the held-out fold's market caps, reshuffled 10 times (same folds and metrics for every candidate):
+
+| model | median abs. % error | median \|log10 error\| | Spearman | within 2× |
+|---|---|---|---|---|
+| radar-2 (flat median, growth 0.75, chain +4%, maturity 0.70–1.00) | 92.3% | 0.723 | 0.370 | 23.9% |
+| radar-3 (shrunk multiple, fitted size tilt, growth 0.25, no chains, maturity 0.90–1.00) | 88.4% | 0.598 | 0.364 | 29.1% |
+
+Same-seed direct comparison (seed 20261116, shipped functions): radar-2 93.9% / 0.744 / 0.357 / 21.8% vs radar-3 89.2% / 0.565 / 0.348 / 29.4%. The Spearman dip (−0.01) is inside the noise (sd ±0.03 across reshuffles); the log-error and within-2× gains are not.
 
 **Farm plan** — 7 steps per protocol, derived from its own record: category decides the action, TVL decides the capital ($50–$250), age decides the hold (30–60 days). First step is wallet hygiene, last is claim safety.
 
@@ -36,10 +47,10 @@ implied = TVL x category_multiple
 
 - 758 protocols in the snapshot; 40 on the watchlist; 342 record no token
 - Board: **197 rows** (40 watchlist + 157 found below the $50M floor), all 40 watchlist slugs covered
-- Total implied value: **$4,528,519,243**; top launch Steakhouse Financial $648.9M; last row Nucleus $584,953
+- Total implied value: **$2,738,731,387**; top launch Sentora Curator $239.8M; last row Nucleus $1,208,193
 - All 197 implied values are distinct; every farm plan is 7 steps of 99–209 characters
-- Live-token view: top 50 live protocols + a 33-category multiples table
-- Dashboard source: 33,668 bytes total (cap 65,536); no `http` references anywhere in it
+- Live-token view: top 50 live protocols + a 33-category multiples table (blend weight and typical TVL per category)
+- Dashboard source: 35,061 bytes total (dossier text 35,325 bytes, cap 65,536); dossier 734,715 bytes (cap 1.5 MiB); no `http` references anywhere in it
 
 ## How to run
 
